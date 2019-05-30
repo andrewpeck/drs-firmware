@@ -104,7 +104,7 @@ wire [13:0] adc_data = 0;
 // Config
 //--------------------------------------------------------------------------------------------------------------------
 
-wire       roi_mode = 1'b1; // 1=ROI
+wire       roi_mode     = 1'b1; // 1=ROI
 wire       dmode        = 1'b1; // 1=continuous
 wire       reinit       = 1'b0;
 wire [8:0] readout_mask = 9'b1;
@@ -113,6 +113,9 @@ wire       transp_mode  = 1'b0;
 wire [7:0] drs_config   = 8'haa;
 wire [7:0] chn_config   = 8'h55;
 
+reg [47:0] timestamp=0;
+always @(posedge clock)
+  timestamp <= timestamp + 1'b1;
 
 //--------------------------------------------------------------------------------------------------------------------
 // DRS
@@ -132,37 +135,55 @@ wire       drs_srout_i=1'b0;   // Multiplexed Shift Register Output
 wire       drs_wsrout_i=1'b0;  // Double function: Write Shift Register Output if DWRITE=1, Read Shift Register Output if DWRITE=0.
 
 drs drs (
-  .clock                 ( clock33),
-  .reset                 ( reset_drs),
-  .trigger_i             ( trigger),
-  .adc_data_i            ( adc_data),
+  .clock                    (clock33),
+  .reset                    (reset_drs),
+  .timestamp_i              (timestamp),
+  .trigger_i                (trigger),
 
-  .drs_ctl_roi_mode      ( roi_mode),
-  .drs_ctl_dmode         ( dmode),
-  .drs_ctl_config        ( drs_config[7:0]),
-  .drs_ctl_chn_config    ( chn_config[7:0]),
-  .drs_ctl_standby_mode  ( standby_mode),
-  .drs_ctl_transp_mode   ( transp_mode),
+  .adc_data_i               (adc_data),
 
-  .drs_ctl_start         ( start),
-  .drs_ctl_reinit        ( reinit),
-  .drs_ctl_configure_drs ( configure),
-  .drs_ctl_readout_mask  ( readout_mask),
+  .drs_ctl_roi_mode         (roi_mode),
+  .drs_ctl_dmode            (dmode),
+  .drs_ctl_start_latency    (0),
+  .drs_ctl_sample_count_max (1024),
+  .drs_ctl_config           (drs_config[7:0]),
+  .drs_ctl_chn_config       (chn_config[7:0]),
+  .drs_ctl_standby_mode     (standby_mode),
+  .drs_ctl_transp_mode      (transp_mode),
 
-  .drs_addr_o            ( drs_addr_o),
-  .drs_denable_o         ( drs_denable_o),
-  .drs_dwrite_o          ( drs_dwrite_o),
-  .drs_rsrload_o         ( drs_rsrload_o),
-  .drs_srclk_o           ( drs_srclk_o),
-  .drs_srout_i           ( drs_srout_i),
-  .drs_srin_o            ( drs_srin_o),
+  .drs_ctl_start            (start),
+  .drs_ctl_reinit           (reinit),
+  .drs_ctl_configure_drs    (configure),
+  .drs_ctl_readout_mask     (readout_mask),
 
-  .rd_data               ( rd_data),
-  .rd_enable             ( rd_enable),
-  .rd_clock              ( rd_clock)
+  .drs_addr_o               (drs_addr_o),
+  .drs_denable_o            (drs_denable_o),
+  .drs_dwrite_o             (drs_dwrite_o),
+  .drs_rsrload_o            (drs_rsrload_o),
+  .drs_srclk_o              (drs_srclk_en),
+  .drs_srout_i              (drs_srout_i),
+  .drs_srin_o               (drs_srin_o),
 
+  .rd_data                  (rd_data),
+  .rd_enable                (rd_enable),
+  .rd_clock                 (rd_clock),
+
+  .busy_o                   (busy)
 );
 
-
+// put srclk on an oddr
+ODDR #(                           //
+  .DDR_CLK_EDGE("OPPOSITE_EDGE"), // "OPPOSITE_EDGE" or "SAME_EDGE"
+  .INIT(1'b0),                    // Initial value of Q: 1'b0 or 1'b1
+  .SRTYPE("SYNC")                 // Set/Reset type: "SYNC" or "ASYNC"
+) drs_srclk_oddr (                //
+  .Q(drs_srclk_o),                // 1-bit DDR output
+  .C(clock),                      // 1-bit clock input
+  .CE(1'b1),                      // 1-bit clock enable input
+  .D1(1'b1),                      // 1-bit data input (positive edge)
+  .D2(1'b0),                      // 1-bit data input (negative edge)
+  .R(~drs_srclk_en),            // 1-bit reset
+  .S(1'b0)                        // 1-bit set
+);
 
 endmodule

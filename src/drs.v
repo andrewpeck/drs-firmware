@@ -2,12 +2,13 @@
 // synthesis translate_off
 `define SIMULATION
 // synthesis translate_on
-// add crc
-
 
 // TODO: implement ROI trigger delay
+// TODO: figure out what roi old mode does and (possibly?) implement it
+// TODO: tmr
 
 module drs #(
+  parameter TMR_INST = 0,
   parameter READ_WIDTH = 16
 ) (
     //------------------------------------------------------------------------------------------------------------------
@@ -22,6 +23,9 @@ module drs #(
 
     // timestamp counter
     input [47:0] timestamp_i,
+
+    // event counter
+    input [31:0] event_counter_i,
 
     // master trigger
     input trigger_i,
@@ -69,14 +73,14 @@ module drs #(
     // drs io
     //------------------------------------------------------------------------------------------------------------------
 
-    input             drs_srout_i,   // Multiplexed Shift Register Output
-    output reg [3:0]  drs_addr_o,    // Address Bit Inputs
-    output reg        drs_denable_o, // Domino Enable Input. A low-to-high transition starts the Domino Wave. Set-ting this input low stops the Domino Wave.
-    output reg        drs_dwrite_o,  // Domino Write Input. Connects the Domino Wave Circuit to the Sampling Cells to enable sampling if high.
-    output reg        drs_rsrload_o, // Read Shift Register Load Input
-    output            drs_srclk_o,   // Multiplexed Shift Register Clock Input
-    output reg        drs_srin_o,    // Shared Shift Register Input
-    output reg        drs_on_o   ,   //
+    input             drs_srout_i,    // Multiplexed Shift Register Output
+    output reg [3:0]  drs_addr_o,     // Address Bit Inputs
+    output reg        drs_denable_o,  // Domino Enable Input. A low-to-high transition starts the Domino Wave. Set-ting this input low stops the Domino Wave.
+    output reg        drs_dwrite_o,   // Domino Write Input. Connects the Domino Wave Circuit to the Sampling Cells to enable sampling if high.
+    output reg        drs_rsrload_o,  // Read Shift Register Load Input
+    output            drs_srclk_en_o, // Multiplexed Shift Register Clock Input
+    output reg        drs_srin_o,     // Shared Shift Register Input
+    output reg        drs_on_o   ,    //
 
     //------------------------------------------------------------------------------------------------------------------
     // output fifo
@@ -113,17 +117,21 @@ end
 //----------------------------------------------------------------------------------------------------------------------
 
 reg [47:0] timestamp;
+reg [31:0] event_counter;
 reg trigger, domino_ready;
 reg trigger_last;
 always @(posedge clock) begin
   trigger <= (|drs_ctl_readout_mask && domino_ready) ? trigger_i : 0;
 
   // latch timestamp when there is a trigger
-  timestamp <= trigger && !trigger_last;
+  if (trigger && !trigger_last) begin
+    timestamp <= timestamp_i;
+    event_counter <= event_counter_i;
+  end
 end
 
 //----------------------------------------------------------------------------------------------------------------------
-// First/Last/Next Channel Calculators
+// First/Last/Next Channel Calculators for Mask Based Readout
 //----------------------------------------------------------------------------------------------------------------------
 
 reg [3:0] drs_ctl_first_chn;
@@ -135,17 +143,17 @@ reg [8:0] readout_mask_sr;
 integer i,j,k;
 always @(posedge clock) begin
 
-    for( i = 8; i >= 0; i=i-1)
-      if (readout_mask_sr[i])
-          drs_ctl_next_chn=i;
+  for( i = 8; i >= 0; i=i-1)
+    if (readout_mask_sr[i])
+        drs_ctl_next_chn=i;
 
-    for( j = 8; j >= 0; j=j-1)
-      if (drs_ctl_readout_mask[j])
-          drs_ctl_first_chn=j;
+  for( j = 8; j >= 0; j=j-1)
+    if (drs_ctl_readout_mask[j])
+        drs_ctl_first_chn=j;
 
-    for( k = 0; k <= 8; k=k+1)
-      if (drs_ctl_readout_mask[k])
-          drs_ctl_last_chn=k;
+  for( k = 0; k <= 8; k=k+1)
+    if (drs_ctl_readout_mask[k])
+        drs_ctl_last_chn=k;
 
 end
 
@@ -169,21 +177,6 @@ end
 reg srclk_enable=1;
 reg drs_srclk_enable=0;
 
-// put srclk on an oddr
-ODDR #(                           //
-  .DDR_CLK_EDGE("OPPOSITE_EDGE"), // "OPPOSITE_EDGE" or "SAME_EDGE"
-  .INIT(1'b0),                    // Initial value of Q: 1'b0 or 1'b1
-  .SRTYPE("SYNC")                 // Set/Reset type: "SYNC" or "ASYNC"
-) drs_srclk_oddr (                //
-  .Q(drs_srclk_o),                // 1-bit DDR output
-  .C(clock),                      // 1-bit clock input
-  .CE(srclk_enable),              // 1-bit clock enable input
-  .D1(1'b1),                      // 1-bit data input (positive edge)
-  .D2(1'b0),                      // 1-bit data input (negative edge)
-  .R(~drs_srclk_enable),          // 1-bit reset
-  .S(1'b0)                        // 1-bit set
-);
-
 //----------------------------------------------------------------------------------------------------------------------
 // Other signals
 //----------------------------------------------------------------------------------------------------------------------
@@ -191,7 +184,6 @@ reg [7:0]  drs_sr_reg;
 
 // TODO: merge with the other counter
 reg [6:0] drs_start_timer = 0; // startup timer to make sure the domino is running before allowing triggers
-
 
 wire [21:0] crc;
 
@@ -229,25 +221,26 @@ wire shift_out_config_done = (drs_sr_count == 7);
 // State machine parameters
 //----------------------------------------------------------------------------------------------------------------------
 
-localparam INIT            = 0;
-localparam IDLE            = 1;
-localparam START_RUNNING   = 2;
-localparam RUNNING         = 3;
-localparam TRIGGER         = 4;
-localparam WAIT_VDD        = 5;
-localparam START_READOUT   = 6;
-localparam LOAD_RSR        = 7;
-localparam ADC_READOUT     = 8;
-localparam TRAILER         = 9;
-localparam TIMESTAMP       = 10;
-localparam DONE            = 13;
-localparam CONF_SETUP      = 14;
-localparam CONF_STROBE     = 15;
-localparam WSR_ADDR        = 16;
-localparam WSR_SETUP       = 17;
-localparam WSR_STROBE      = 18;
-localparam INIT_RSR        = 19;
-localparam WR_CRC          = 20; // last
+localparam INIT          = 0;
+localparam IDLE          = 1;
+localparam START_RUNNING = 2;
+localparam RUNNING       = 3;
+localparam TRIGGER       = 4;
+localparam WAIT_VDD      = 5;
+localparam INIT_READOUT  = 6;
+localparam LOAD_RSR      = 7;
+localparam ADC_READOUT   = 8;
+localparam STOP_CELL     = 9;
+localparam TIMESTAMP     = 10;
+localparam EVENT_CNT     = 11;
+localparam DONE          = 13;
+localparam CONF_SETUP    = 14;
+localparam CONF_STROBE   = 15;
+localparam WSR_ADDR      = 16;
+localparam WSR_SETUP     = 17;
+localparam WSR_STROBE    = 18;
+localparam INIT_RSR      = 19;
+localparam WR_CRC        = 20; // last
 
 localparam MXSTATEBITS = $clog2(WR_CRC);
 
@@ -261,22 +254,86 @@ reg [MXSTATEBITS-1:0] drs_readout_state=0;
 always @(posedge clock) begin
 
   if (reset) begin
-      drs_readout_state <= INIT;
+
+  //------------------------------------------------------------------------------------------------------------
+  // State
+  //------------------------------------------------------------------------------------------------------------
+  drs_readout_state <= INIT;
+
+  //------------------------------------------------------------------------------------------------------------
+  // Logic
+  //------------------------------------------------------------------------------------------------------------
+
+  // drs
+  drs_denable_o        <= 0;     // domino waves disabled
+  drs_srin_o           <= 0;
+  drs_addr_o           <= ADR_STANDBY;  // standby
+  drs_on_o             <= 1;
+  drs_rsrload_o        <= 0;
+  drs_dwrite_set       <= 0;
+  drs_srclk_enable     <= 0;
+
+  // fifo
+  fifo_reset           <= 1;
+  fifo_wdata           <= 0;
+  fifo_wen             <= 0;
+  fifo_wen_crc         <= 0;
+
+  // internal
+  drs_stat_busy        <= 0;
+  drs_sample_count     <= 0;
+  drs_rd_tmp_count     <= 0;
+  drs_reinit_request   <= 1;
+  domino_ready         <= 0;
+  //drs_old_roi_mode <= 1;
+
   end
 
   else begin
+
+  fifo_wen     <= 0;
+  fifo_wen_crc <= 0;
+  fifo_reset   <= 0;
+  domino_ready <= 1;
+
+  // Memorize a write access to the bit in the control register
+  // that requests a reinitialisation of the DRS readout state
+  // machine (drs_ctl_reinit goes high for only one cycle,
+  // therefore this "trigger" is memorised).
+  if (drs_ctl_reinit)
+      drs_reinit_request <= 1;
 
   case (drs_readout_state)
 
     // INIT
     INIT: begin
 
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
           drs_readout_state <= IDLE;
 
-    end
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
+          // disable clock
+          drs_srclk_enable     <= 0;
+          drs_rsrload_o        <= 0;
+          drs_stat_busy        <= 0;
+          drs_reinit_request   <= 0;
+          drs_denable_o        <= 0;
+
+
+    end // fini
 
     // IDLE
     IDLE: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
 
           if (drs_reinit_request)
               drs_readout_state  <= INIT;
@@ -291,199 +348,10 @@ always @(posedge clock) begin
           //if (drs_old_roi_mode && ~drs_ctl_roi_mode)
           //    drs_readout_state  <= INIT_RSR;
 
-    end
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
 
-    // START RUNNING DOMINO
-    START_RUNNING: begin
-
-          if (drs_reinit_request)
-              drs_readout_state  <= INIT;
-
-          // do not go to running until at least 1.5 domino revolutions
-          if (drs_start_timer == 105) // 105 * 30ns <= 3.15us
-              drs_readout_state  <= RUNNING;
-
-    end
-
-    // WAIT FOR TRIGGER
-    RUNNING: begin
-
-          if (drs_reinit_request)
-              drs_readout_state  <= INIT;
-          if (drs_ctl_standby_mode)
-              drs_readout_state  <= IDLE;
-
-          // trigger received or DMODE <= 0? If so,
-          // stop domino wave & start readout sequence
-          // (DMODE=0 means single shot readout)
-
-          if (trigger || drs_ctl_dmode == 1'b0)
-              drs_readout_state  <= TRIGGER;
-
-    end
-
-    // STOP DOMINO
-    TRIGGER: begin
-          drs_readout_state <= WAIT_VDD;
-    end
-
-    // WAIT FOR SUPPLY TO SETTLE
-    WAIT_VDD: begin
-          if (drs_reinit_request)
-            drs_readout_state <= INIT;
-
-          if (drs_rd_tmp_count == 'h7ff)
-            drs_readout_state <= START_READOUT;
-            end
-
-    // READOUT ADC
-    START_READOUT: begin
-          if (drs_reinit_request)
-              drs_readout_state <= INIT;
-          else
-              drs_readout_state <= LOAD_RSR;
-    end
-
-    //
-    LOAD_RSR: begin
-          if (drs_reinit_request)
-              drs_readout_state <= INIT;
-          else
-              drs_readout_state <= ADC_READOUT;
-    end
-
-    // READOUT ADC
-    ADC_READOUT: begin
-          if (drs_reinit_request)
-              drs_readout_state <= INIT;
-
-          // All cells & channels of DRS chips read ?
-          if (drs_sample_count==drs_ctl_sample_count_max) begin
-            if (drs_addr==drs_ctl_last_chn)
-              drs_readout_state <= TRAILER;
-          end
-    end
-
-    //
-    TRAILER: begin
-          drs_readout_state <= TIMESTAMP;
-    end
-
-    TIMESTAMP: begin
-          if (drs_rd_tmp_count == 2)
-            drs_readout_state <= DONE;
-    end
-
-
-//    TRAILER1: begin
-//          drs_readout_state <= DONE;
-//    end
-
-    DONE: begin
-          drs_readout_state    <= WR_CRC;
-    end
-
-    WR_CRC: begin
-          drs_readout_state    <= IDLE;
-    end
-
-    // set-up of configuration register
-    CONF_SETUP: begin
-          drs_readout_state    <= CONF_STROBE;
-    end
-
-
-    // write configuration register to chip
-    CONF_STROBE: begin
-          if (shift_out_config_done)
-              drs_readout_state <= WSR_ADDR;
-    end
-
-    // change address without changing clock
-    WSR_ADDR: begin
-          drs_readout_state    <= WSR_SETUP;
-    end
-
-    // set-up of write shift register
-    WSR_SETUP: begin
-          drs_readout_state    <= WSR_STROBE;
-    end
-
-    // write shift register to chip
-    WSR_STROBE: begin
-          if (shift_out_config_done)
-              drs_readout_state <= IDLE;
-    end
-
-    // initialize read shift register
-    INIT_RSR: begin
-        if (drs_sr_count == 1024)
-            drs_readout_state  <= IDLE;
-    end
-
-    endcase
-  end
-end
-
-
-//----------------------------------------------------------------------------------------------------------------------
-//
-//----------------------------------------------------------------------------------------------------------------------
-
-always @(posedge clock) begin
-
-  if (reset) begin
-
-    // drs
-    drs_denable_o        <= 0;     // domino waves disabled
-    drs_srin_o           <= 0;
-    drs_addr_o           <= ADR_STANDBY;  // standby
-    drs_on_o             <= 1;
-    drs_rsrload_o        <= 0;
-    drs_dwrite_set       <= 0;
-    drs_srclk_enable     <= 0;
-
-    // fifo
-    fifo_reset           <= 1;
-    fifo_wdata           <= 0;
-    fifo_wen             <= 0;
-    fifo_wen_crc         <= 0;
-
-    // internal
-    drs_stat_busy        <= 0;
-    drs_sample_count     <= 0;
-    drs_rd_tmp_count     <= 0;
-    drs_reinit_request   <= 1;
-    domino_ready         <= 0;
-    //drs_old_roi_mode <= 1;
-
-end
-else begin
-
-    fifo_wen     <= 0;
-    fifo_wen_crc         <= 0;
-    fifo_reset   <= 0;
-    domino_ready <= 1;
-
-    // Memorize a write access to the bit in the control register
-    // that requests a reinitialisation of the DRS readout state
-    // machine (drs_ctl_reinit goes high for only one cycle,
-    // therefore this "trigger" is memorised).
-    if (drs_ctl_reinit)
-        drs_reinit_request <= 1;
-
-    case (drs_readout_state)
-
-      INIT: begin
-          // disable clock
-          drs_srclk_enable     <= 0;
-          drs_rsrload_o        <= 0;
-          drs_stat_busy        <= 0;
-          drs_reinit_request   <= 0;
-          drs_denable_o        <= 0;
-      end
-
-      IDLE: begin
           fifo_wen_crc         <= 0;
           drs_srclk_enable     <= 0; // disable clock
           drs_srin_o           <= 0;
@@ -517,11 +385,29 @@ else begin
           //        drs_addr_o   <= ADR_READ_SR; // address read shift register
           //        drs_sr_count <= 0;
           //end
-      end
 
-      START_RUNNING: begin
+    end // fini
 
-          drs_denable_o         <= 1;   // enable and start domino wave
+    // START RUNNING DOMINO
+    START_RUNNING: begin
+
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_reinit_request)
+              drs_readout_state  <= INIT;
+
+          // do not go to running until at least 1.5 domino revolutions
+          if (drs_start_timer == 105) // 105 * 30ns <= 3.15us
+              drs_readout_state  <= RUNNING;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
+          drs_denable_o    <= 1;   // enable and start domino wave
           domino_ready     <= 0;
 
           if (drs_start_timer==0)
@@ -534,15 +420,49 @@ else begin
           if (drs_start_timer==105) // 105 * 30ns <= 3.15us
             domino_ready <= 1;  // arm trigger
 
-      end
+    end // fini
+
+    // WAIT FOR TRIGGER
+    RUNNING: begin
 
 
-      RUNNING: begin
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_reinit_request)
+              drs_readout_state  <= INIT;
+          if (drs_ctl_standby_mode)
+              drs_readout_state  <= IDLE;
+
+          // trigger received or DMODE <= 0? If so,
+          // stop domino wave & start readout sequence
+          // (DMODE=0 means single shot readout)
+
+          if (trigger || drs_ctl_dmode == 1'b0)
+              drs_readout_state  <= TRIGGER;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           // domino is running... waiting for trigger
-      end
 
+    end // fini
 
-      TRIGGER: begin
+    // STOP DOMINO
+    TRIGGER: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          drs_readout_state <= WAIT_VDD;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_addr             <= drs_ctl_first_chn;
           readout_mask_sr      <= drs_ctl_readout_mask;
           drs_addr_o           <= ADR_READ_SR;  // address write shift register for readout
@@ -550,30 +470,92 @@ else begin
           drs_rd_tmp_count     <= 0;
           drs_stop_cell        <= 0;
           //drs_stop_wsr         <= 0;
-      end
 
+    end // fini
 
-      WAIT_VDD: begin
+    // WAIT FOR SUPPLY TO SETTLE BEFORE READOUT
+    WAIT_VDD: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_reinit_request)
+            drs_readout_state <= INIT;
+
+          if (drs_rd_tmp_count == 'h7ff)
+            drs_readout_state <= INIT_READOUT;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_srclk_enable <= 0; // disable clock
           if (drs_rd_tmp_count == 'h7ff)
             drs_rd_tmp_count <= 0;
           else
             drs_rd_tmp_count <= drs_rd_tmp_count + 1'b1;
-      end
 
+    end // fini
 
-      START_READOUT: begin
+    // INITIATE READOUT
+    INIT_READOUT: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_reinit_request)
+              drs_readout_state <= INIT;
+          else
+              drs_readout_state <= LOAD_RSR;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
+    end // fini
+
+    // LOAD THE STOP CELL INTO THE SHIFT REGISTER
+    LOAD_RSR: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_reinit_request)
+              drs_readout_state <= INIT;
+          else
+              drs_readout_state <= ADC_READOUT;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_srclk_enable <= 0;    // disable clock
           drs_addr_o <= drs_addr; // select channel for readout
-      end
 
+    end // fini
 
-      LOAD_RSR: begin
-          drs_srclk_enable   <= 0;    // disable clock
-          drs_rsrload_o      <= (drs_ctl_roi_mode) ; // load read shift register with stop position
-      end
+    // READOUT ADC
+    ADC_READOUT: begin
 
-      ADC_READOUT : begin
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_reinit_request)
+              drs_readout_state <= INIT;
+
+          // All cells & channels of DRS chips read ?
+          if (drs_sample_count==drs_ctl_sample_count_max) begin
+            if (drs_addr==drs_ctl_last_chn)
+              drs_readout_state <= STOP_CELL;
+          end
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
 
           // It stores the cell number where the sampling has
           // been stopped and encodes this position in a 10 bit binary
@@ -623,15 +605,41 @@ else begin
             end
           end
 
-      end
+    end // fini
 
-      TRAILER: begin
+    // APPEND THE STOP CELL
+    STOP_CELL: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          drs_readout_state <= TIMESTAMP;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           fifo_wdata[15:10] <= 5'b0;
           fifo_wdata[ 9: 0] <= drs_stop_cell;
           fifo_wen          <= 1;
-      end
 
-      TIMESTAMP: begin
+    end // fini
+
+    // APPEND A TIMESTAMP
+    TIMESTAMP: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_rd_tmp_count == 2)
+            drs_readout_state <= EVENT_CNT;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           if (drs_rd_tmp_count == 2)
             drs_rd_tmp_count <= 0;
           else
@@ -639,40 +647,109 @@ else begin
 
           fifo_wdata[15:0]  <= timestamp[16*drs_rd_tmp_count+:16];
           fifo_wen          <= 1;
-      end
+
+    end // fini
+
+    // APPEND THE EVENT COUNT
+    EVENT_CNT: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_rd_tmp_count == 1)
+            drs_readout_state <= DONE;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_rd_tmp_count == 1)
+            drs_rd_tmp_count <= 0;
+          else
+            drs_rd_tmp_count <= drs_rd_tmp_count + 1'b1;
+
+          fifo_wdata[15:0]  <= event_counter[16*drs_rd_tmp_count+:16];
+          fifo_wen          <= 1;
+
+    end // fini
 
 
-//      TRAILER1: begin
-//        fifo_wdata[15:10] <= 0;
-//        fifo_wdata[ 9: 1] <= 0;
-//        fifo_wdata[    0] <= 0; // drs_stop_wsr;
-//        fifo_wen          <= 1;
-//      end
+    // FINISH READOUT
+    DONE: begin
 
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
 
-      DONE: begin
+          drs_readout_state    <= WR_CRC;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_stat_busy        <= 0;
           fifo_wen             <= 0;
           drs_dwrite_set       <= 1; // to keep chip "warm"
-      end
 
-      WR_CRC: begin
+    end // fini
+
+    // APPEND A CRC TO THE DATA PACKET
+    WR_CRC: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          drs_readout_state    <= IDLE;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           fifo_wdata[15:0]     <= crc[15:0];
-      end
 
-      //----------------------------------------------------------------------------------------------------------------
-      // Configure
-      //----------------------------------------------------------------------------------------------------------------
+    end // fini
 
-      CONF_SETUP: begin
+    //----------------------------------------------------------------------------------------------------------------
+    // Configure
+    //----------------------------------------------------------------------------------------------------------------
+
+    // set-up of configuration register
+    CONF_SETUP: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          drs_readout_state    <= CONF_STROBE;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_srclk_enable <= 1;                      // enable clock
           drs_sr_count     <= 0;                      //
           drs_sr_reg       <= 8'hf8 | drs_ctl_config; // c.f. drs manual, The unused bits must but always be 1.
           drs_srin_o       <= 1;                      // shift out 7 bits MSB first; bit 7 must ALWAYS be 1
-      end
+
+    end // fini
 
 
-      CONF_STROBE: begin
+    // write configuration register to chip
+    CONF_STROBE: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (shift_out_config_done)
+              drs_readout_state <= WSR_ADDR;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_sr_count     <= drs_sr_count + 1; //
           drs_srclk_enable <= 1;                // enable clock
           drs_sr_reg[7:1]  <= drs_sr_reg[6:0];  // shift out 7 bits MSB first
@@ -680,47 +757,83 @@ else begin
 
           if (shift_out_config_done)
               drs_srclk_enable <= 0; // disable clock
-      end
 
+    end // fini
 
-      //----------------------------------------------------------------------------------------------------------------
-      // Write to Shift register
-      //----------------------------------------------------------------------------------------------------------------
+    // A Write Shift Register containing 8 bits is used to acti-
+    // vate channel 0 to 7. Channel 8 is always active and can
+    // be used to digitize an external reference clock. The bits
+    // are shifted by one position on each revolution of the
+    // domino wave. If this register is loaded with 1’s, all chan-
+    // nels are active all the time, and the DRS4 works like hav-
+    // ing 8 independent channels. The other extreme is a single
+    // 1 loaded into the register. This 1 is clocked through all 8
+    // positions consecutively. It then shows up at the
+    // WSROUT output and can be fed back into the shift regis-
+    // ter via the WSRIN input or internally by setting
+    // WSRLOOP in the Configuration Register to 1 to form a
+    // cyclic operation. This means that on the first domino
+    // revolution the first channel is active; on the second dom-
+    // ino revolution the second channel is active and so on. If
+    // the input signal gets fanned out into each of the 8 chan-
+    // nels, the DRS4 chip works like having a single channel
+    // with 8 times the sampling depth.
+    // set address to 1101 ("address write shift register"
 
-      // A Write Shift Register containing 8 bits is used to acti-
-      // vate channel 0 to 7. Channel 8 is always active and can
-      // be used to digitize an external reference clock. The bits
-      // are shifted by one position on each revolution of the
-      // domino wave. If this register is loaded with 1’s, all chan-
-      // nels are active all the time, and the DRS4 works like hav-
-      // ing 8 independent channels. The other extreme is a single
-      // 1 loaded into the register. This 1 is clocked through all 8
-      // positions consecutively. It then shows up at the
-      // WSROUT output and can be fed back into the shift regis-
-      // ter via the WSRIN input or internally by setting
-      // WSRLOOP in the Configuration Register to 1 to form a
-      // cyclic operation. This means that on the first domino
-      // revolution the first channel is active; on the second dom-
-      // ino revolution the second channel is active and so on. If
-      // the input signal gets fanned out into each of the 8 chan-
-      // nels, the DRS4 chip works like having a single channel
-      // with 8 times the sampling depth.
-      // set address to 1101 ("address write shift register"
+    //----------------------------------------------------------------------------------------------------------------
+    // Write to Shift register
+    //----------------------------------------------------------------------------------------------------------------
 
-      WSR_ADDR: begin
+    WSR_ADDR: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          drs_readout_state    <= WSR_SETUP;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_addr_o  <= ADR_WRITE_SR;  // address write shift register
-      end
 
+    end // fini
 
-      WSR_SETUP: begin
+    // set-up of write shift register
+    WSR_SETUP: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          drs_readout_state    <= WSR_STROBE;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_srclk_enable <= 1; // enable clock
           drs_sr_count     <= 0;
           drs_sr_reg       <= drs_ctl_chn_config; // copy configuration into output shift register
           drs_srin_o       <= drs_ctl_chn_config[7]; // shift out 7 bits MSB first
-      end
 
+    end // fini
 
-      WSR_STROBE: begin
+    // write shift register to chip
+    WSR_STROBE: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (shift_out_config_done)
+              drs_readout_state <= IDLE;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_sr_count     <= drs_sr_count + 1;
           drs_srclk_enable <= 1; // enable clock
           drs_sr_reg[7:1]  <= drs_sr_reg[6:0];
@@ -728,10 +841,23 @@ else begin
 
           if (shift_out_config_done)
             drs_srclk_enable <= 0; // disable clock
-      end
 
+    end // fini
 
-      INIT_RSR: begin
+    // initialize read shift register
+    INIT_RSR: begin
+
+          //------------------------------------------------------------------------------------------------------------
+          // State
+          //------------------------------------------------------------------------------------------------------------
+
+          if (drs_sr_count == 1024)
+              drs_readout_state  <= IDLE;
+
+          //------------------------------------------------------------------------------------------------------------
+          // Logic
+          //------------------------------------------------------------------------------------------------------------
+
           drs_sr_count <= drs_sr_count + 1'b1;
 
           // enable clock
@@ -745,8 +871,7 @@ else begin
             drs_srclk_enable <= 0; // disable clock
           end
 
-      end
-
+    end // fini
 
     endcase
   end // end !reset
@@ -799,11 +924,12 @@ assign rd_data = fifo_wdata;
         RUNNING         : state_disp <= "RUNNING";
         TRIGGER         : state_disp <= "TRIGGER";
         WAIT_VDD        : state_disp <= "WAIT_VDD";
-        START_READOUT   : state_disp <= "START_READOUT";
+        INIT_READOUT    : state_disp <= "INIT_READOUT";
         LOAD_RSR        : state_disp <= "LOAD_RSR";
         ADC_READOUT     : state_disp <= "ADC_READOUT";
-        TRAILER         : state_disp <= "TRAILER";
+        STOP_CELL       : state_disp <= "STOP_CELL";
         TIMESTAMP       : state_disp <= "TIMESTAMP";
+        EVENT_CNT       : state_disp <= "EVENT_CNT";
         DONE            : state_disp <= "DONE";
         CONF_SETUP      : state_disp <= "CONF_SETUP";
         CONF_STROBE     : state_disp <= "CONF_STROBE";
