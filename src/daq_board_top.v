@@ -1,3 +1,6 @@
+// TODO: ADC clock phase??
+// TODO: ADC setup/hold constraints
+// Data outputs are available one propagation delay (tPD = 2ns -- 6ns) after the rising edge of the clock signal.
 `define IOB (*IOB="true"*)
 module daq_board_top #(
   parameter READ_WIDTH = 16
@@ -110,6 +113,7 @@ wire       standby_mode     = 1'b0;
 wire       transp_mode      = 1'b0;
 wire [7:0] drs_config       = 7'h00;
 wire [7:0] chn_config       = 7'h00;
+wire [56:0] dna;
 reg [5:0]  start_latency    = 0;
 reg [10:0] sample_count_max = 1024;
 
@@ -167,6 +171,7 @@ drs drs (
   .reset                     (reset),
   .trigger_i                 (trigger),
   .timestamp_i               (timestamp),
+  .dna_i                     (dna[15:0]),
   .event_counter_i           (event_counter),
 
   .adc_data_i                (adc_data_i),
@@ -187,8 +192,9 @@ drs drs (
   .drs_srout_i               (drs_srout_i),
 
   .drs_addr_o                (drs_addr_o[3:0]),
+  .drs_nreset_o              (drs_nreset_o),
   .drs_denable_o             (drs_denable_o),
-  .drs_dwrite_o              (drs_dwrite_o),
+  .drs_dwrite_o              (drs_dwrite),
   .drs_rsrload_o             (drs_rsrload_o),
   .drs_srclk_en_o            (drs_srclk_en),
   .drs_srin_o                (drs_srin_o),
@@ -200,6 +206,14 @@ drs drs (
   .busy_o                    (busy)
 
 );
+
+
+//trigger_delay trigger_delay (
+//.clock(clock),
+//.coarse_delay(coarse_delay),
+//.d (),
+//.q ()
+//);
 
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -232,8 +246,6 @@ counter #(
 //----------------------------------------------------------------------------------------------------------------------
 // Device DNA in case it is useful
 //----------------------------------------------------------------------------------------------------------------------
-
-wire [56:0] dna;
 
 device_dna device_dna (
 .clock(clock),
