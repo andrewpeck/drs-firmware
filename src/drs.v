@@ -53,7 +53,7 @@ module drs #(
     input        drs_ctl_spike_removal,           // set 1 for spike removal
     input        drs_ctl_roi_mode,                // set 1 for region of interest mode
     input        drs_ctl_dmode,                   // set 1 = continuous domino, 0=single shot
-    input [5:0]  drs_ctl_start_latency,           // latency from first sr clock to when adc data should be valid
+    input [5:0]  drs_ctl_adc_latency,             // latency from first sr clock to when adc data should be valid
                                                   // correlates with ADC conversion latency
                                                   //
     input [12:0] drs_ctl_wait_vdd_clocks,         //
@@ -105,7 +105,9 @@ module drs #(
     //------------------------------------------------------------------------------------------------------------------
     // status
     //------------------------------------------------------------------------------------------------------------------
-    output busy_o // drs is doing a readout
+
+    output reg readout_complete, // goes high 1 clock when readout finishes, for counting
+    output     busy_o            // drs is doing a readout
 );
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -184,9 +186,6 @@ end
 // DRS DWrite
 //----------------------------------------------------------------------------------------------------------------------
 
-// i don't think these even makes sense
-// why does initiating a trigger need to turn off d-write special here..? why not controlled by the sm
-// for speed?
 always @(posedge clock) begin
 //  if (trigger)
 //    drs_dwrite_o <= 1'b0;
@@ -205,8 +204,8 @@ reg [6:0] drs_start_timer = 0; // startup timer to make sure the domino is runni
 
 wire [21:0] crc;
 
-//reg [7:0]  drs_stat_stop_wsr=0;
-//reg        drs_stop_wsr=0;
+reg [7:0]  drs_stat_stop_wsr=0;
+reg        drs_stop_wsr=0;
 reg [9:0]  drs_stop_cell=0;
 reg [9:0]  drs_stat_stop_cell=0;
 reg [10:0] drs_sample_count=0;
@@ -300,6 +299,7 @@ always @(posedge clock) begin
   drs_reinit_request   <= 1;
   domino_ready         <= 0;
   drs_old_roi_mode     <= 1;
+  readout_complete     <= 0;
 
   end
 
@@ -309,6 +309,7 @@ always @(posedge clock) begin
   fifo_wen_crc <= 0;
   fifo_reset   <= 0;
   domino_ready <= 1;
+  readout_complete <= 0;
 
   // Memorize a write access to the bit in the control register
   // that requests a reinitialisation of the DRS readout state
@@ -431,10 +432,7 @@ always @(posedge clock) begin
           drs_denable_o    <= 1;   // enable and start domino wave
           domino_ready     <= 0;
 
-          //if (drs_start_timer==0)
           drs_dwrite_set <= 1;   // set drs_write_ff in proc_drs_write
-          //else
-          //  drs_dwrite_set <= 0; // FIXME THIS MAKES NO SENSE WHY DOES IT GET SET TO 0 WTF??
 
           // do not go to running until at least 1.5 domino revolutions
           drs_start_timer  <= drs_start_timer + 1;
@@ -532,6 +530,15 @@ always @(posedge clock) begin
     // put in a separate state from INIT to respect addr to rsrload setup time
     RSR_LOAD: begin
 
+          // It stores the cell number where the sampling has
+          // been stopped and encodes this position in a 10 bit binary
+          // number ranging from 0 to 1023. This encoded position is
+          // clocked out to SROUT on the first ten readout clock cy-
+          // cles, as can be seen in Figure 15. The rising edge of the
+          // RSRLOAD signal outputs the MSB, while the falling
+          // edges of the SRCLK signal reveal the following bits up
+          // to the LSB.
+
           //------------------------------------------------------------------------------------------------------------
           // State
           //------------------------------------------------------------------------------------------------------------
@@ -570,18 +577,12 @@ always @(posedge clock) begin
           // Logic
           //------------------------------------------------------------------------------------------------------------
 
-          // It stores the cell number where the sampling has
-          // been stopped and encodes this position in a 10 bit binary
-          // number ranging from 0 to 1023. This encoded position is
-          // clocked out to SROUT on the first ten readout clock cy-
-          // cles, as can be seen in Figure 15. The rising edge of the
-          // RSRLOAD signal outputs the MSB, while the falling
-          // edges of the SRCLK signal reveal the following bits up
-          // to the LSB.
+          if (drs_rd_tmp_count < drs_ctl_sample_count_max)
+            drs_srclk_en_o <= 1; // enable clock
+          else
+            drs_srclk_en_o <= 0; // disable clock
 
-          drs_srclk_en_o   <= 1; // enable clock
-
-          drs_rsrload_o <= 0;
+          drs_rsrload_o  <= 0;
 
           drs_rd_tmp_count <= drs_rd_tmp_count + 1'b1;
 
@@ -591,17 +592,27 @@ always @(posedge clock) begin
             drs_stop_cell[9:1] <= drs_stop_cell[8:0];
           end
 
+          // If the DRS4 is configured for channel cascading or daisy-
+          //   chaining, it is necessary to know which the current chan-
+          //   nel is where the sampling has been stopped. This can be
+          //   determined by addressing the Write Shift Register with
+          // A3-A0 = 1101 b  and by applying clock pulses to the
+          // SRCLK input. If the DRS4 is configured in single chan-
+          //   nel mode and the sampling stopped at channel i, then 8-i
+          //   clock pulses will reveal the 1 at the WSROUT and the
+          //   SROUT outputs.
+
           //if (drs_rd_tmp_count == 2 && (drs_addr == drs_ctl_first_chn))
           //  drs_stop_wsr <= drs_srout_i;   // sample last bit of WSR for first channel
 
 
           // ADC delivers data at its outputs with 7 clock cycles delay
           // with respect to its external clock pin
-          if (drs_srclk_en_o==1 && drs_rd_tmp_count > drs_ctl_start_latency) begin
-            drs_sample_count  <= drs_sample_count + 1'b1;
+          if (drs_rd_tmp_count > drs_ctl_adc_latency) begin
             fifo_wdata[15:2]  <= adc_data[13:0];  // ADC data
             fifo_wdata[1:0]   <= 2'b00;
             fifo_wen          <= 1'b1;
+            drs_sample_count  <= drs_sample_count + 1'b1;
           end
 
           // finished
@@ -611,10 +622,10 @@ always @(posedge clock) begin
 
             // write stop cell into register
             drs_stat_stop_cell <= drs_stop_cell;
-            //drs_stat_stop_wsr  <= drs_stop_wsr;
+            drs_stat_stop_wsr  <= drs_stop_wsr;
 
             // increment channel address
-            // change to mapping based "skip"
+            // bit mask based "skip" to only readout enabled channels with next channel lookahead
 
             if (drs_addr != drs_ctl_last_chn) begin
               drs_addr             <= drs_ctl_next_chn;
@@ -724,6 +735,7 @@ always @(posedge clock) begin
           // Logic
           //------------------------------------------------------------------------------------------------------------
 
+          readout_complete     <= 1;
           drs_stat_busy        <= 0;
           fifo_wen             <= 0;
           drs_dwrite_set       <= 1; // to keep chip "warm"
@@ -940,7 +952,7 @@ always @(posedge clock) begin
           drs_addr_o       <= ADR_READ_SR; // address read shift register
 
           drs_sr_count     <= drs_sr_count + 1'b1;
-          drs_srin_o       <= (drs_sr_count==1024);
+          drs_srin_o       <= (drs_sr_count==1025);
           drs_srclk_en_o   <= (drs_sr_count > 0 && drs_sr_count < 1025);
 
 
@@ -1016,6 +1028,7 @@ assign rd_data = fifo_wdata;
         TRIGGER         : state_disp <= "TRIGGER";
         WAIT_VDD        : state_disp <= "WAIT_VDD";
         INIT_READOUT    : state_disp <= "INIT_READOUT";
+        RSR_LOAD        : state_disp <= "RSR_LOAD";
         ADC_READOUT     : state_disp <= "ADC_READOUT";
         STOP_CELL       : state_disp <= "STOP_CELL";
         TIMESTAMP       : state_disp <= "TIMESTAMP";

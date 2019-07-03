@@ -182,7 +182,7 @@ drs drs (
 
   .drs_ctl_roi_mode         (roi_mode),
   .drs_ctl_dmode            (dmode),
-  .drs_ctl_start_latency    (8),
+  .drs_ctl_adc_latency      (8),
   .drs_ctl_sample_count_max (1024),
   .drs_ctl_config           (drs_config[7:0]),
   .drs_ctl_chn_config       (chn_config[7:0]),
@@ -199,6 +199,7 @@ drs drs (
   .drs_addr_o               (drs_addr_o),
   .drs_denable_o            (drs_denable_o),
   .drs_dwrite_o             (drs_dwrite_o),
+  .drs_nreset_o             (drs_nreset_o),
   .drs_rsrload_o            (drs_rsrload_o),
   .drs_srclk_en_o           (drs_srclk_en),
   .drs_srout_i              (drs_srout_i),
@@ -208,7 +209,10 @@ drs drs (
   .rd_enable                (rd_enable),
   .rd_clock                 (rd_clock),
 
+
   .trigger_i                (trigger),
+
+  .readout_complete         (readout_complete),
 
   .busy_o                   (busy)
 );
