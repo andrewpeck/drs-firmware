@@ -98,9 +98,9 @@ module drs #(
     // output fifo
     //------------------------------------------------------------------------------------------------------------------
 
-    output [READ_WIDTH-1:0] rd_data,
-    input                   rd_enable,
-    input                   rd_clock,
+    output [READ_WIDTH-1:0] fifo_wdata_o,
+    output                  fifo_wen_o,
+    output                  fifo_clock_o,
 
     //------------------------------------------------------------------------------------------------------------------
     // status
@@ -995,24 +995,9 @@ crc22a crc22a (
 // Output FIFO
 //----------------------------------------------------------------------------------------------------------------------
 
-assign rd_data = fifo_wdata;
-
-//drs_fifo #(
-//  .READ_WIDTH(READ_WIDTH),
-//  .WRITE_WIDTH(16),
-//  .DEPTH(1024)
-//) drs_fifo (
-//  .reset   (fifo_reset),
-//
-//  .wr_clk  (clock),
-//  .wr_data (fifo_wdata),
-//  .wr_en   (fifo_wen || fifo_wen_crc),
-//
-//  .rd_clk  (rd_clock),
-//  .rd_data (rd_data),
-//  .rd_en   (rd_enable)
-//);
-
+assign fifo_wdata_o = fifo_wdata;
+assign fifo_wen_o   = fifo_wen || fifo_wen_crc;
+assign fifo_clock_o = clock;
 
 `ifdef SIMULATION
     // Write-buffer auto-clear state machine display

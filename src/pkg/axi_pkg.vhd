@@ -3,7 +3,8 @@ use IEEE.STD_LOGIC_1164.all;
 
 package axi_pkg is
 
-  constant C_IPB_AXI_ADDR_WIDTH : integer := 26;
+  constant C_IPB_AXI_ADDR_WIDTH : integer := 32;
+  constant C_IPB_AXI_DATA_WIDTH : integer := 32;
 
 	type t_axi_lite_mosi is record
 	      -- read

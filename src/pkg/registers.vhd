@@ -34,11 +34,11 @@ package registers is
     constant REG_CHIP_CHANNEL_CONFIG_DEFAULT : std_logic_vector(31 downto 24) := x"ff";
 
     constant REG_CHIP_DTAP_HIGH_CNTS_ADDR    : std_logic_vector(5 downto 0) := "00" & x"1";
-    constant REG_CHIP_DTAP_HIGH_CNTS_MSB    : integer := 20;
+    constant REG_CHIP_DTAP_HIGH_CNTS_MSB    : integer := 24;
     constant REG_CHIP_DTAP_HIGH_CNTS_LSB     : integer := 0;
 
     constant REG_CHIP_DTAP_LOW_CNTS_ADDR    : std_logic_vector(5 downto 0) := "00" & x"2";
-    constant REG_CHIP_DTAP_LOW_CNTS_MSB    : integer := 20;
+    constant REG_CHIP_DTAP_LOW_CNTS_MSB    : integer := 24;
     constant REG_CHIP_DTAP_LOW_CNTS_LSB     : integer := 0;
 
     constant REG_READOUT_ROI_MODE_ADDR    : std_logic_vector(5 downto 0) := "01" & x"0";

@@ -16,19 +16,18 @@ use ieee.numeric_std.all;
 Library UNISIM;
 use UNISIM.vcomponents.all;
 
-entity daq_board_top is
+entity drs_top is
 port (
 
-    -- ~ 33MHz ADC clock
+    -- 33MHz ADC clock
     clock_i_p : in std_logic;
     clock_i_n : in std_logic;
 
-    -- adc
+    -- Data pins from ADC
     adc_data_i : in std_logic_vector (13 downto 0);
 
-    -- drs io
-    drs_srout_i : in std_logic;   -- Multiplexed Shift Register Outpu
-
+    -- DRS IO
+    drs_srout_i : in std_logic;                        -- Multiplexed Shift Register Outpu
     drs_addr_o    : out std_logic_vector (3 downto 0); -- Address Bit Inputs
     drs_denable_o : out std_logic;                     -- Domino Enable Input. A low-to-high transition starts the Domino Wave. Set-ting this input low stops the Domino Wave.
     drs_dwrite_o  : out std_logic;                     -- Domino Write Input. Connects the Domino Wave Circuit to the Sampling Cells to enable sampling if high.
@@ -43,12 +42,39 @@ port (
     trigger_i_n : in std_logic;
 
     gpio_p : inout std_logic_vector (10 downto 0);
-    gpio_n : inout std_logic_vector (10 downto 0)
+    gpio_n : inout std_logic_vector (10 downto 0);
 
+    -- ADC Readout
+    -- fifo_data_out  : out std_logic_vector (15 downto 0);
+    -- fifo_clock_out : out std_logic;
+    -- fifo_fifo_busy : in std_logic;
+
+    -- AXI For Slow Control
+    S_AXI_LITE_ACLK    : in std_logic;
+    S_AXI_LITE_ARESETN : in std_logic;
+    S_AXI_LITE_AWADDR  : in std_logic_vector (C_IPB_AXI_ADDR_WIDTH-1 downto 0);
+    S_AXI_LITE_AWPROT  : in std_logic_vector (2 downto 0);
+    S_AXI_LITE_AWVALID : in std_logic;
+    S_AXI_LITE_AWREADY : out std_logic;
+    S_AXI_LITE_WDATA   : in std_logic_vector (C_IPB_AXI_DATA_WIDTH-1 downto 0);
+    S_AXI_LITE_WSTRB   : in std_logic_vector((32/8)-1 downto 0); -- 32 = C_S_AXI_DATA_WIDTH
+    S_AXI_LITE_WVALID  : in std_logic;
+    S_AXI_LITE_WREADY  : out std_logic;
+    S_AXI_LITE_BRESP   : out std_logic_vector (1 downto 0);
+    S_AXI_LITE_BVALID  : out std_logic;
+    S_AXI_LITE_BREADY  : in std_logic;
+    S_AXI_LITE_ARADDR  : in std_logic_vector (C_IPB_AXI_ADDR_WIDTH-1 downto 0);
+    S_AXI_LITE_ARPROT  : in std_logic_vector (2 downto 0);
+    S_AXI_LITE_ARVALID : in std_logic;
+    S_AXI_LITE_ARREADY : out std_logic;
+    S_AXI_LITE_RDATA   : out std_logic_vector (C_IPB_AXI_DATA_WIDTH-1 downto 0);
+    S_AXI_LITE_RRESP   : out std_logic_vector(1 downto 0);
+    S_AXI_LITE_RVALID  : out std_logic;
+    S_AXI_LITE_RREADY  : in std_logic
 );
-end daq_board_top;
+end drs_top;
 
-architecture Behavioral of daq_board_top is
+architecture Behavioral of drs_top is
 
     signal clk33  : std_logic;
     signal clk264 : std_logic;
@@ -106,10 +132,10 @@ architecture Behavioral of daq_board_top is
     signal dtap_high_cnt    : unsigned         (24 downto 0) := (others => '0');
     signal dtap_low_cnt     : unsigned         (24 downto 0) := (others => '0');
 
-    signal dtap_high_cnt_reg : unsigned         (24 downto 0) := (others => '0');
-    signal dtap_low_cnt_reg  : unsigned         (24 downto 0) := (others => '0');
+    signal dtap_high_cnt_reg : std_logic_vector (24 downto 0) := (others => '0');
+    signal dtap_low_cnt_reg  : std_logic_vector (24 downto 0) := (others => '0');
 
-    signal dtap_last        : std_logic := 0;
+    signal dtap_last        : std_logic := '0';
 
     signal readout_complete : std_logic;
 
@@ -156,6 +182,30 @@ architecture Behavioral of daq_board_top is
 
 begin
 
+
+    S_AXI_LITE_ARREADY <= ipb_axi_miso.arready;                                   -- out
+    S_AXI_LITE_AWREADY <= ipb_axi_miso.awready;                                   -- out
+    S_AXI_LITE_BRESP   <= ipb_axi_miso.bresp;                                     -- out
+    S_AXI_LITE_BVALID  <= ipb_axi_miso.bvalid;                                    -- out
+    S_AXI_LITE_RDATA   <= ipb_axi_miso.rdata;                                     -- out
+    S_AXI_LITE_RVALID  <= ipb_axi_miso.rvalid;                                    -- out
+    S_AXI_LITE_RRESP   <= ipb_axi_miso.rresp                                     ; -- out
+    S_AXI_LITE_WREADY  <= ipb_axi_miso.wready; -- out
+
+    ipb_axi_mosi.araddr(C_IPB_AXI_ADDR_WIDTH - 1 downto 0) <=S_AXI_LITE_ARADDR  ; -- out
+    ipb_axi_mosi.wvalid                                    <= S_AXI_LITE_WVALID  ; -- in
+    axi_clk                                                <= S_AXI_LITE_ACLK    ; -- in
+    axi_reset                                              <= S_AXI_LITE_ARESETN ; -- in
+    ipb_axi_mosi.wdata                                     <= S_AXI_LITE_WDATA   ; -- in
+    ipb_axi_mosi.arprot                                    <= S_AXI_LITE_ARPROT  ; -- in
+    ipb_axi_mosi.arvalid                                   <= S_AXI_LITE_ARVALID ; -- in
+    ipb_axi_mosi.awaddr(C_IPB_AXI_ADDR_WIDTH - 1 downto 0) <= S_AXI_LITE_AWADDR  ; -- in
+    ipb_axi_mosi.awprot                                    <= S_AXI_LITE_AWPROT  ; -- in
+    ipb_axi_mosi.awvalid                                   <= S_AXI_LITE_AWVALID ; -- in
+    ipb_axi_mosi.bready                                    <= S_AXI_LITE_BREADY  ; -- in
+    ipb_axi_mosi.rready                                    <= S_AXI_LITE_RREADY  ; -- in
+    ipb_axi_mosi.wstrb                                     <= S_AXI_LITE_WSTRB   ; -- in
+
 ------------------------------------------------------------------------------------------------------------------------
 -- MMCM / PLL
 ------------------------------------------------------------------------------------------------------------------------
@@ -171,7 +221,7 @@ begin
 
 
     clock <= clk33;
-    rd_clock <= clk264;
+    rd_clock <= clk33;
 -----------------------------------------------------------------------------------------------------------------------
 -- Trigger Input
 -----------------------------------------------------------------------------------------------------------------------
@@ -209,7 +259,7 @@ begin
         if (drs_dtap = '1') then
             dtap_high_cnt    <= dtap_high_cnt + 1;
         else
-            dtap_high_cnt    <= 0;
+            dtap_high_cnt    <= (others => '0');
         end if;
 
         -- latch high state counter on falling edge
@@ -221,7 +271,7 @@ begin
         if (drs_dtap = '0') then
             dtap_low_cnt    <= dtap_low_cnt + 1;
         else
-            dtap_low_cnt    <= 0;
+            dtap_low_cnt    <= (others => '0');
         end if;
 
         -- latch low state counter on rising edge
@@ -324,16 +374,15 @@ begin
         drs_srclk_en_o             => drs_srclk_en,
         drs_srin_o                 => drs_srin_o,
 
-        rd_data                    => rd_data(15 downto 0),
-        rd_enable                  => rd_enable,
-        rd_clock                   => rd_clock,
+        fifo_wdata_o               => open, -- fifo_data_out(15 downto 0),
+        fifo_wen_o                 => open, -- fifo_data_wen,
+        fifo_clock_o               => open, -- fifo_clock_out,
 
         readout_complete           => readout_complete,
 
         busy_o                     => busy
 
     );
-
 
     --trigger_delay trigger_delay (
     --clock => clock,
@@ -378,7 +427,7 @@ begin
     i_axi_ipbus_bridge : entity work.axi_ipbus_bridge
     generic map(
         C_NUM_IPB_SLAVES   => IPB_SLAVES,
-        C_S_AXI_DATA_WIDTH => 32,
+        C_S_AXI_DATA_WIDTH => C_IPB_AXI_DATA_WIDTH,
         C_S_AXI_ADDR_WIDTH => C_IPB_AXI_ADDR_WIDTH
     )
     port map(
@@ -388,24 +437,24 @@ begin
         ipb_mosi_o    => ipb_mosi_arr,
         S_AXI_ACLK    => axi_clk,
         S_AXI_ARESETN => axi_reset,
-        S_AXI_AWADDR  => ipb_axi_mosi.awaddr(C_IPB_AXI_ADDR_WIDTH - 1 downto 0),
-        S_AXI_AWPROT  => ipb_axi_mosi.awprot,
-        S_AXI_AWVALID => ipb_axi_mosi.awvalid,
-        S_AXI_AWREADY => ipb_axi_miso.awready,
-        S_AXI_WDATA   => ipb_axi_mosi.wdata,
-        S_AXI_WSTRB   => ipb_axi_mosi.wstrb,
-        S_AXI_WVALID  => ipb_axi_mosi.wvalid,
-        S_AXI_WREADY  => ipb_axi_miso.wready,
-        S_AXI_BRESP   => ipb_axi_miso.bresp,
-        S_AXI_BVALID  => ipb_axi_miso.bvalid,
-        S_AXI_BREADY  => ipb_axi_mosi.bready,
         S_AXI_ARADDR  => ipb_axi_mosi.araddr(C_IPB_AXI_ADDR_WIDTH - 1 downto 0),
         S_AXI_ARPROT  => ipb_axi_mosi.arprot,
-        S_AXI_ARVALID => ipb_axi_mosi.arvalid,
         S_AXI_ARREADY => ipb_axi_miso.arready,
+        S_AXI_ARVALID => ipb_axi_mosi.arvalid,
+        S_AXI_AWADDR  => ipb_axi_mosi.awaddr(C_IPB_AXI_ADDR_WIDTH - 1 downto 0),
+        S_AXI_AWPROT  => ipb_axi_mosi.awprot,
+        S_AXI_AWREADY => ipb_axi_miso.awready,
+        S_AXI_AWVALID => ipb_axi_mosi.awvalid,
+        S_AXI_BREADY  => ipb_axi_mosi.bready,
+        S_AXI_BRESP   => ipb_axi_miso.bresp,
+        S_AXI_BVALID  => ipb_axi_miso.bvalid,
         S_AXI_RDATA   => ipb_axi_miso.rdata,
         S_AXI_RRESP   => ipb_axi_miso.rresp,
         S_AXI_RVALID  => ipb_axi_miso.rvalid,
+        S_AXI_WDATA   => ipb_axi_mosi.wdata,
+        S_AXI_WREADY  => ipb_axi_miso.wready,
+        S_AXI_WVALID  => ipb_axi_mosi.wvalid,
+        S_AXI_WSTRB   => ipb_axi_mosi.wstrb,
         S_AXI_RREADY  => ipb_axi_mosi.rready
     );
 

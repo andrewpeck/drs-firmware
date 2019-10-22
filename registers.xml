@@ -46,11 +46,11 @@
             fw_default="0xff"/>
         <node id="DTAP_HIGH_CNTS" address="0x1" permission="r"
             description="Number of 33MHz clocks counted while DTAP was high. Should be equal to 33 Million (0x1f78a40) for 1.024 GHz sampling rate. Please see manual "
-            mask="0x1fffff"
+            mask="0x1ffffff"
             fw_signal="dtap_high_cnt_reg" />
         <node id="DTAP_LOW_CNTS" address="0x2" permission="r"
             description="Number of 33MHz clocks counted while DTAP was low. Should be equal to 33 Million (0x1f78a40) for 1.024 GHz sampling rate. Please see manual "
-            mask="0x1fffff"
+            mask="0x1ffffff"
             fw_signal="dtap_low_cnt_reg" />
     </node> <!--CONFIG-->
 
